@@ -1,0 +1,63 @@
+[
+  {
+    "id": "gaming",
+    "name": "游戏开黑",
+    "summary": "优先保证清晰度和低延迟，减少键盘和风扇干扰。",
+    "recommendedSettings": {
+      "gain": "-14 dBFS average voice",
+      "noiseGate": "Close -42 dB / Open -36 dB",
+      "compressor": "Ratio 3:1, Threshold -18 dB, Attack 8 ms, Release 90 ms",
+      "eq": "HPF 80 Hz, cut 250 Hz slightly, boost 3 kHz slightly",
+      "notes": [
+        "麦克风离嘴 10 到 15 厘米",
+        "键盘机械轴噪声较大时，优先做摆位而不是重降噪"
+      ]
+    }
+  },
+  {
+    "id": "singing",
+    "name": "唱歌",
+    "summary": "保留动态和空气感，同时避免近讲效应过强。",
+    "recommendedSettings": {
+      "gain": "-18 dBFS average voice, keep headroom",
+      "noiseGate": "Usually off or very gentle",
+      "compressor": "Ratio 2.5:1, Threshold -20 dB, Attack 20 ms, Release 120 ms",
+      "eq": "HPF 70 Hz, tame 250 Hz if muddy, add 10 kHz air carefully",
+      "notes": [
+        "收音环境比插件更重要",
+        "强混响前先把原始人声录干净"
+      ]
+    }
+  },
+  {
+    "id": "livestream",
+    "name": "直播带货",
+    "summary": "突出稳定、靠前的人声，确保平台端听感一致。",
+    "recommendedSettings": {
+      "gain": "-12 dBFS average voice",
+      "noiseGate": "Close -40 dB / Open -34 dB",
+      "compressor": "Ratio 4:1, Threshold -16 dB, Attack 5 ms, Release 70 ms",
+      "eq": "HPF 90 Hz, cut 300 Hz slightly, presence boost 4 kHz",
+      "notes": [
+        "注意环境空调噪声与回声",
+        "避免边播边开外放，优先耳返"
+      ]
+    }
+  },
+  {
+    "id": "podcast",
+    "name": "播客",
+    "summary": "保持自然和耐听，少做激进处理。",
+    "recommendedSettings": {
+      "gain": "-16 dBFS average voice",
+      "noiseGate": "Very light expander instead of a hard gate",
+      "compressor": "Ratio 2:1, Threshold -18 dB, Attack 15 ms, Release 110 ms",
+      "eq": "HPF 75 Hz, gentle low-mid cleanup, small boost around 2.5 kHz",
+      "notes": [
+        "房间混响要先控制",
+        "多说话人录制时统一话筒距离"
+      ]
+    }
+  }
+]
+
