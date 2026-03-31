@@ -12,8 +12,46 @@ import {
   type AudioMetrics,
 } from '../../core/src/audioAnalysis.ts'
 
+type Provider = 'local' | 'openai' | 'ollama'
+
+type AiSummary = {
+  summary: string
+  eqSuggestion: string
+  compressorSuggestion: string
+  obsGuide: string
+}
+
+type DiagnoseApiResponse = {
+  diagnosis: DiagnosisResult
+  insights: MetricInsight[]
+  scenario: ReturnType<typeof getScenarioTemplate>
+  providerUsed: Provider
+  retrievalMode: string
+  retrievedProblems: string[]
+  aiSummary: AiSummary
+}
+
 const scenarioTemplates = listScenarioTemplates()
 const defaultIssue = '有电流声'
+
+function buildFallbackSummary(
+  diagnosis: DiagnosisResult,
+  scenarioId: string,
+  metrics: AudioMetrics | null,
+): AiSummary {
+  const scenario = getScenarioTemplate(scenarioId)
+  const signalLine = metrics
+    ? `当前录音平均电平 ${metrics.rmsDb} dB，峰值 ${metrics.peakDb} dB，噪声底约 ${metrics.noiseFloorDb} dB。`
+    : '当前还没有录音指标，所以先走文本诊断路径。'
+
+  return {
+    summary: `先围绕“${diagnosis.matchedProblem}”排查。${signalLine}`,
+    eqSuggestion: `EQ 建议从 ${scenario.recommendedSettings.eq} 起步，先轻微修正再回听。`,
+    compressorSuggestion: `压缩器建议从 ${scenario.recommendedSettings.compressor} 起步，先稳住人声，再避免把底噪一起抬上来。`,
+    obsGuide:
+      'OBS 中优先检查输入设备、同步偏移和滤镜顺序；先把源电平调健康，再做门限、压缩和降噪。',
+  }
+}
 
 function App() {
   const [issueInput, setIssueInput] = useState(defaultIssue)
@@ -27,8 +65,17 @@ function App() {
   const [insights, setInsights] = useState<MetricInsight[]>([])
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [isRecording, setIsRecording] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [countdown, setCountdown] = useState(5)
+  const [provider, setProvider] = useState<Provider>('local')
+  const [resolvedProvider, setResolvedProvider] = useState<Provider>('local')
+  const [retrievalMode, setRetrievalMode] = useState('lexical')
+  const [retrievedProblems, setRetrievedProblems] = useState<string[]>([])
+  const [aiSummary, setAiSummary] = useState<AiSummary>(() =>
+    buildFallbackSummary(diagnoseIssue(defaultIssue), 'gaming', null),
+  )
+  const [diagnosisNote, setDiagnosisNote] = useState<string | null>(null)
+  const [recordingError, setRecordingError] = useState<string | null>(null)
+  const [isDiagnosing, setIsDiagnosing] = useState(false)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -48,8 +95,53 @@ function App() {
     }
   }, [audioUrl])
 
-  function handleDiagnose() {
-    setDiagnosis(diagnoseIssue(issueInput))
+  async function handleDiagnose() {
+    const localDiagnosis = diagnoseIssue(issueInput)
+    const localInsights = metrics ? diagnoseMetrics(metrics) : []
+
+    setIsDiagnosing(true)
+    setDiagnosisNote(null)
+    setDiagnosis(localDiagnosis)
+    setInsights(localInsights)
+    setAiSummary(buildFallbackSummary(localDiagnosis, selectedScenarioId, metrics))
+
+    try {
+      const response = await fetch('/api/diagnose', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          issue: issueInput,
+          metrics,
+          scenarioId: selectedScenarioId,
+          provider,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`API returned ${response.status}`)
+      }
+
+      const payload = (await response.json()) as DiagnoseApiResponse
+      setDiagnosis(payload.diagnosis)
+      setInsights(payload.insights)
+      setAiSummary(payload.aiSummary)
+      setResolvedProvider(payload.providerUsed)
+      setRetrievalMode(payload.retrievalMode)
+      setRetrievedProblems(payload.retrievedProblems)
+    } catch {
+      setResolvedProvider('local')
+      setRetrievalMode('lexical')
+      setRetrievedProblems([localDiagnosis.matchedProblem])
+      setDiagnosisNote(
+        provider === 'local'
+          ? '当前使用本地规则诊断模式。'
+          : '服务端 AI 当前不可用，已自动回退到本地规则诊断。',
+      )
+    } finally {
+      setIsDiagnosing(false)
+    }
   }
 
   async function stopRecording() {
@@ -63,7 +155,7 @@ function App() {
 
   async function startRecording() {
     try {
-      setError(null)
+      setRecordingError(null)
       setIsRecording(true)
       setCountdown(5)
       chunksRef.current = []
@@ -117,10 +209,10 @@ function App() {
         window.clearInterval(timer)
         void stopRecording()
       }, 5000)
-    } catch (recordingError) {
-      setError(
-        recordingError instanceof Error
-          ? recordingError.message
+    } catch (error) {
+      setRecordingError(
+        error instanceof Error
+          ? error.message
           : '无法访问麦克风，请检查浏览器权限。',
       )
       setIsRecording(false)
@@ -166,8 +258,8 @@ function App() {
                 </h1>
                 <p className="max-w-2xl text-base text-slate-300 md:text-lg">
                   Detect noise, clipping, rough latency, and channel issues in
-                  the browser, then turn that into practical actions for OBS,
-                  Discord, Zoom, and streaming setups.
+                  the browser, then route them through local rules, OpenAI, or
+                  Ollama-backed RAG for practical fixes.
                 </p>
               </div>
 
@@ -200,7 +292,7 @@ function App() {
                     Live Demo Flow
                   </p>
                   <span className="rounded-full bg-orange-500/20 px-3 py-1 text-xs text-orange-200">
-                    Browser only
+                    Browser + API
                   </span>
                 </div>
 
@@ -212,7 +304,7 @@ function App() {
                     2. 录制 5 秒真实麦克风音频
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    3. 立刻拿到排查路径、调音建议和场景模板
+                    3. 切换 local / OpenAI / Ollama 生成不同层级建议
                   </div>
                 </div>
               </div>
@@ -220,15 +312,15 @@ function App() {
               <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-2xl bg-slate-950/90 p-4 text-white">
                   <p className="text-xs uppercase tracking-[0.22em] text-cyan-200">
-                    Works With
+                    Retrieval
                   </p>
-                  <p className="mt-2">OBS / Discord / Zoom</p>
+                  <p className="mt-2">{retrievalMode}</p>
                 </div>
                 <div className="rounded-2xl bg-slate-950/90 p-4 text-white">
                   <p className="text-xs uppercase tracking-[0.22em] text-cyan-200">
-                    Future Path
+                    Provider
                   </p>
-                  <p className="mt-2">OpenAI + local model support</p>
+                  <p className="mt-2">{resolvedProvider}</p>
                 </div>
               </div>
             </div>
@@ -241,7 +333,7 @@ function App() {
               Text Diagnosis
             </p>
             <h2 className="mt-3 text-2xl font-semibold text-white">
-              输入一句话，先拿到诊断路径
+              输入一句话，走本地规则或 RAG 增强诊断
             </h2>
 
             <div className="mt-5 flex flex-col gap-3">
@@ -251,13 +343,37 @@ function App() {
                 onChange={(event) => setIssueInput(event.target.value)}
                 placeholder="例如：有电流声、声音很小、直播有延迟"
               />
+
+              <div className="flex flex-wrap gap-2">
+                {(['local', 'openai', 'ollama'] as Provider[]).map((option) => (
+                  <button
+                    key={option}
+                    className={`rounded-full px-4 py-2 text-sm transition ${
+                      option === provider
+                        ? 'bg-cyan-300 text-slate-950'
+                        : 'border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+                    }`}
+                    onClick={() => setProvider(option)}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+
               <button
-                className="inline-flex w-fit items-center rounded-full bg-cyan-400 px-5 py-3 font-medium text-slate-950 transition hover:bg-cyan-300"
-                onClick={handleDiagnose}
+                className="inline-flex w-fit items-center rounded-full bg-cyan-400 px-5 py-3 font-medium text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-cyan-400/50"
+                onClick={() => void handleDiagnose()}
+                disabled={isDiagnosing}
               >
-                生成诊断建议
+                {isDiagnosing ? '分析中...' : '生成诊断建议'}
               </button>
             </div>
+
+            {diagnosisNote ? (
+              <p className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-slate-300">
+                {diagnosisNote}
+              </p>
+            ) : null}
 
             <div className="mt-6 rounded-3xl border border-white/10 bg-slate-950/70 p-5">
               <div className="flex items-center justify-between gap-4">
@@ -270,6 +386,17 @@ function App() {
                 <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 text-xs uppercase tracking-[0.2em] text-cyan-100">
                   {diagnosis.confidence}
                 </span>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {retrievedProblems.map((problem) => (
+                  <span
+                    key={problem}
+                    className="rounded-full border border-orange-300/20 bg-orange-300/10 px-3 py-1 text-xs text-orange-100"
+                  >
+                    {problem}
+                  </span>
+                ))}
               </div>
 
               <div className="mt-5 grid gap-4 md:grid-cols-3">
@@ -334,9 +461,9 @@ function App() {
                 </button>
               </div>
 
-              {error ? (
+              {recordingError ? (
                 <p className="mt-4 rounded-2xl border border-rose-300/20 bg-rose-300/10 p-3 text-sm text-rose-100">
-                  {error}
+                  {recordingError}
                 </p>
               ) : null}
 
@@ -389,85 +516,119 @@ function App() {
           </div>
         </section>
 
-        <section className="rounded-[1.75rem] border border-white/10 bg-slate-900/70 p-6 backdrop-blur">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <p className="text-sm uppercase tracking-[0.24em] text-emerald-200">
-                Scene Templates
-              </p>
-              <h2 className="mt-3 text-2xl font-semibold text-white">
-                给不同创作场景一键推荐设置
-              </h2>
-            </div>
+        <section className="grid gap-6 lg:grid-cols-[1fr_0.95fr]">
+          <div className="rounded-[1.75rem] border border-white/10 bg-slate-900/70 p-6 backdrop-blur">
+            <p className="text-sm uppercase tracking-[0.24em] text-violet-200">
+              AI Tuning Output
+            </p>
+            <h2 className="mt-3 text-2xl font-semibold text-white">
+              把检索到的知识和当前音频状态转成调音建议
+            </h2>
 
-            <div className="flex flex-wrap gap-2">
-              {scenarioTemplates.map((template) => (
-                <button
-                  key={template.id}
-                  className={`rounded-full px-4 py-2 text-sm transition ${
-                    template.id === selectedScenarioId
-                      ? 'bg-emerald-300 text-slate-950'
-                      : 'border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
-                  }`}
-                  onClick={() => setSelectedScenarioId(template.id)}
-                >
-                  {template.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-6 grid gap-6 lg:grid-cols-[0.75fr_1.25fr]">
-            <div className="rounded-[1.5rem] border border-emerald-300/20 bg-emerald-300/10 p-5">
-              <p className="text-sm uppercase tracking-[0.18em] text-emerald-100">
-                场景说明
-              </p>
-              <p className="mt-3 text-xl font-semibold text-white">
-                {selectedScenario.name}
-              </p>
-              <p className="mt-3 text-sm text-slate-200">
-                {selectedScenario.summary}
-              </p>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5">
-                <p className="text-sm text-slate-400">Gain Target</p>
-                <p className="mt-2 text-lg font-semibold text-white">
-                  {selectedScenario.recommendedSettings.gain}
-                </p>
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5 md:col-span-2">
+                <p className="text-sm text-slate-400">Summary</p>
+                <p className="mt-2 text-base text-white">{aiSummary.summary}</p>
               </div>
               <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5">
-                <p className="text-sm text-slate-400">Noise Gate</p>
-                <p className="mt-2 text-lg font-semibold text-white">
-                  {selectedScenario.recommendedSettings.noiseGate}
+                <p className="text-sm text-slate-400">EQ Suggestion</p>
+                <p className="mt-2 text-base text-white">
+                  {aiSummary.eqSuggestion}
                 </p>
               </div>
               <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5">
                 <p className="text-sm text-slate-400">Compressor</p>
-                <p className="mt-2 text-lg font-semibold text-white">
-                  {selectedScenario.recommendedSettings.compressor}
+                <p className="mt-2 text-base text-white">
+                  {aiSummary.compressorSuggestion}
                 </p>
               </div>
-              <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5">
-                <p className="text-sm text-slate-400">EQ Direction</p>
-                <p className="mt-2 text-lg font-semibold text-white">
-                  {selectedScenario.recommendedSettings.eq}
-                </p>
+              <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5 md:col-span-2">
+                <p className="text-sm text-slate-400">OBS Guide</p>
+                <p className="mt-2 text-base text-white">{aiSummary.obsGuide}</p>
               </div>
             </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
-            {selectedScenario.recommendedSettings.notes.map((note) => (
-              <span
-                key={note}
-                className="rounded-full border border-orange-300/20 bg-orange-300/10 px-3 py-1 text-xs text-orange-100"
-              >
-                {note}
-              </span>
-            ))}
-          </div>
+          <section className="rounded-[1.75rem] border border-white/10 bg-slate-900/70 p-6 backdrop-blur">
+            <div className="flex flex-col gap-4">
+              <div>
+                <p className="text-sm uppercase tracking-[0.24em] text-emerald-200">
+                  Scene Templates
+                </p>
+                <h2 className="mt-3 text-2xl font-semibold text-white">
+                  给不同创作场景一键推荐设置
+                </h2>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {scenarioTemplates.map((template) => (
+                  <button
+                    key={template.id}
+                    className={`rounded-full px-4 py-2 text-sm transition ${
+                      template.id === selectedScenarioId
+                        ? 'bg-emerald-300 text-slate-950'
+                        : 'border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+                    }`}
+                    onClick={() => setSelectedScenarioId(template.id)}
+                  >
+                    {template.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-6 grid gap-6">
+              <div className="rounded-[1.5rem] border border-emerald-300/20 bg-emerald-300/10 p-5">
+                <p className="text-sm uppercase tracking-[0.18em] text-emerald-100">
+                  场景说明
+                </p>
+                <p className="mt-3 text-xl font-semibold text-white">
+                  {selectedScenario.name}
+                </p>
+                <p className="mt-3 text-sm text-slate-200">
+                  {selectedScenario.summary}
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5">
+                  <p className="text-sm text-slate-400">Gain Target</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {selectedScenario.recommendedSettings.gain}
+                  </p>
+                </div>
+                <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5">
+                  <p className="text-sm text-slate-400">Noise Gate</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {selectedScenario.recommendedSettings.noiseGate}
+                  </p>
+                </div>
+                <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5">
+                  <p className="text-sm text-slate-400">Compressor</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {selectedScenario.recommendedSettings.compressor}
+                  </p>
+                </div>
+                <div className="rounded-3xl border border-white/10 bg-slate-950/75 p-5">
+                  <p className="text-sm text-slate-400">EQ Direction</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {selectedScenario.recommendedSettings.eq}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {selectedScenario.recommendedSettings.notes.map((note) => (
+                <span
+                  key={note}
+                  className="rounded-full border border-orange-300/20 bg-orange-300/10 px-3 py-1 text-xs text-orange-100"
+                >
+                  {note}
+                </span>
+              ))}
+            </div>
+          </section>
         </section>
       </main>
     </div>

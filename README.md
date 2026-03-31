@@ -12,6 +12,12 @@ Fix your microphone & audio issues in 3 minutes with AI.
 
 AudioCopilot is an open-source toolkit for creators, streamers, podcasters, and remote teams who need fast, practical audio troubleshooting. It combines browser-based signal analysis with a structured audio troubleshooting knowledge base so users can move from "I hear static" to a concrete fix path in minutes.
 
+## Live AI Modes
+
+- `local`: lexical retrieval + rule-based summary, no API key required
+- `openai`: hybrid retrieval with embeddings + Responses API generation
+- `ollama`: local model generation through Ollama
+
 ## Why It Can Win
 
 - Browser-first microphone testing with no desktop install required
@@ -102,6 +108,18 @@ npm run dev
 
 Then open the Vite app from the `web` workspace.
 
+To run the Vercel API locally as well:
+
+```bash
+npm run dev:full
+```
+
+Copy `.env.example` to `.env` and fill in either the OpenAI or Ollama settings if you want LLM-enhanced diagnosis.
+
+## Deployment
+
+Deployment notes live in [docs/deployment.md](./docs/deployment.md).
+
 ## Roadmap
 
 - [x] Browser microphone recorder
@@ -126,4 +144,3 @@ Then open the Vite app from the `web` workspace.
 This project does not win just because the model is smarter.
 
 It wins if we turn messy audio troubleshooting experience into a reusable, structured knowledge system.
-

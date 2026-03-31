@@ -2,10 +2,14 @@
   "name": "audio-copilot",
   "private": true,
   "version": "0.1.0",
+  "dependencies": {
+    "openai": "^6.7.0"
+  },
   "scripts": {
     "dev": "npm --prefix web run dev",
+    "dev:full": "npx vercel dev",
     "build": "npm --prefix web run build",
-    "lint": "npm --prefix web run lint"
+    "lint": "npm --prefix web run lint",
+    "deploy": "npx vercel --prod"
   }
 }
-
